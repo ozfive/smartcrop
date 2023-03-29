@@ -124,48 +124,52 @@ func NewAnalyzerWithLogger(resizer options.Resizer, logger Logger) Analyzer {
 	return &smartcropAnalyzer{Resizer: resizer, logger: logger}
 }
 
-func (o smartcropAnalyzer) FindBestCrop(img image.Image, width, height int) (image.Rectangle, error) {
+func (o standardAnalyzer) FindBestCrop(img image.Image, width, height int) (image.Rectangle, error) {
+	log := o.cropSettings.Log
 	if width == 0 && height == 0 {
-		return image.Rectangle{}, ErrInvalidDimensions
+		return image.Rectangle{}, errors.New("Expect either a height or width")
 	}
 
+	scale := math.Min(float64(img.Bounds().Size().X)/float64(width), float64(img.Bounds().Size().Y)/float64(height))
+
 	// resize image for faster processing
-	scale := math.Min(float64(img.Bounds().Dx())/float64(width), float64(img.Bounds().Dy())/float64(height))
 	var lowimg *image.RGBA
-	var prescalefactor = 1.0
+	prescalefactor := 1.0
 
 	if prescale {
-		// if f := 1.0 / scale / minScale; f < 1.0 {
-		// prescalefactor = f
-		// }
-		if f := prescaleMin / math.Min(float64(img.Bounds().Dx()), float64(img.Bounds().Dy())); f < 1.0 {
+		if f := prescaleMin / math.Min(float64(img.Bounds().Size().X), float64(img.Bounds().Size().Y)); f < 1.0 {
 			prescalefactor = f
 		}
-		o.logger.Log.Println(prescalefactor)
+		log.Println(prescalefactor)
 
-		smallimg := o.Resize(
-			img,
-			uint(float64(img.Bounds().Dx())*prescalefactor),
-			0)
+		rect := image.Rect(0, 0, int(float64(img.Bounds().Dx())*prescalefactor),
+			int(float64(img.Bounds().Dy())*prescalefactor))
+		lowimg = image.NewRGBA(rect)
+		err := rez.Convert(lowimg, img, rez.NewBilinearFilter())
 
-		lowimg = toRGBA(smallimg)
+		if err != nil {
+			draw.ApproxBiLinear.Scale(lowimg, lowimg.Bounds(), img, img.Bounds(), draw.Src, nil)
+		}
 	} else {
 		lowimg = toRGBA(img)
 	}
 
-	if o.logger.DebugMode {
-		_ = writeImage("png", lowimg, "./smartcrop_prescale.png")
+	if o.cropSettings.DebugMode {
+		writeImageToPng(lowimg, "./smartcrop_prescale.png")
 	}
 
 	cropWidth, cropHeight := chop(float64(width)*scale*prescalefactor), chop(float64(height)*scale*prescalefactor)
 	realMinScale := math.Min(maxScale, math.Max(1.0/scale, minScale))
 
-	o.logger.Log.Printf("original resolution: %dx%d\n", img.Bounds().Dx(), img.Bounds().Dy())
-	o.logger.Log.Printf("scale: %f, cropw: %f, croph: %f, minscale: %f\n", scale, cropWidth, cropHeight, realMinScale)
+	log.Printf("original resolution: %dx%d\n", img.Bounds().Size().X, img.Bounds().Size().Y)
+	log.Printf("scale: %f, cropw: %f, croph: %f, minscale: %f\n", scale, cropWidth, cropHeight, realMinScale)
 
-	topCrop := analyse(o.logger, lowimg, cropWidth, cropHeight, realMinScale)
+	topCrop, err := analyse(o.cropSettings, lowimg, cropWidth, cropHeight, realMinScale)
+	if err != nil {
+		return topCrop, err
+	}
 
-	if prescale == true {
+	if prescale {
 		topCrop.Min.X = int(chop(float64(topCrop.Min.X) / prescalefactor))
 		topCrop.Min.Y = int(chop(float64(topCrop.Min.Y) / prescalefactor))
 		topCrop.Max.X = int(chop(float64(topCrop.Max.X) / prescalefactor))
